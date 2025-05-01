@@ -1,0 +1,15 @@
+{application, internet_archive_filter, [
+    {description, "em_filter example for Internet Archive"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {mod, {internet_archive_filter_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        em_filter
+    ]},
+    {env, []},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, [{"GitHub", "https://github.com/EmergenceSystem/internet_archive_filter"}]}
+]}.
