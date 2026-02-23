@@ -1,30 +1,63 @@
 %%%-------------------------------------------------------------------
-%%% @doc Internet Archive full-text search filter.
+%%% @doc Internet Archive full-text search agent.
 %%%
-%%% Queries the Archive.org advanced search API and returns
-%%% matching documents as embryo maps.
+%%% As an agent this module:
+%%%   - Announces capabilities to em_disco on startup via `agent_hello'.
+%%%   - Maintains a memory of document URLs already returned, so
+%%%     duplicate documents across successive queries are filtered out.
+%%%
+%%% Handler contract: `handle/2' (Body, Memory) -> {RawList, NewMemory}.
+%%% Returns a raw Erlang list — em_filter_server encodes it.
+%%% Memory schema: `#{seen => #{binary_url => true}}'.
 %%% @end
 %%%-------------------------------------------------------------------
 -module(internet_archive_filter_app).
 -behaviour(application).
 
 -export([start/2, stop/1]).
--export([handle/1]).
+-export([handle/1, handle/2]).
 
 -define(SEARCH_URL, "https://archive.org/advancedsearch.php?q=").
+
+-define(CAPABILITIES, [
+    <<"internet_archive">>,
+    <<"archive">>,
+    <<"history">>,
+    <<"books">>,
+    <<"documents">>
+]).
 
 %%====================================================================
 %% Application behaviour
 %%====================================================================
 
 start(_StartType, _StartArgs) ->
-    em_filter:start_filter(archive_filter, ?MODULE).
+    em_filter:start_agent(archive_filter, ?MODULE, #{
+        capabilities => ?CAPABILITIES,
+        memory       => ets
+    }).
 
 stop(_State) ->
     em_filter:stop_filter(archive_filter).
 
 %%====================================================================
-%% Filter handler — returns a list of embryo maps
+%% Agent handler — with memory (primary path)
+%%====================================================================
+
+handle(Body, Memory) when is_binary(Body) ->
+    Seen    = maps:get(seen, Memory, #{}),
+    Embryos = generate_embryo_list(Body),
+    Fresh   = [E || E <- Embryos, not maps:is_key(url_of(E), Seen)],
+    NewSeen = lists:foldl(fun(E, Acc) ->
+        Acc#{url_of(E) => true}
+    end, Seen, Fresh),
+    {Fresh, Memory#{seen => NewSeen}};
+
+handle(_Body, Memory) ->
+    {[], Memory}.
+
+%%====================================================================
+%% Plain filter handler — backward compatibility
 %%====================================================================
 
 handle(Body) when is_binary(Body) ->
@@ -33,7 +66,7 @@ handle(_) ->
     [].
 
 %%====================================================================
-%% Search and processing
+%% Search and processing (unchanged)
 %%====================================================================
 
 generate_embryo_list(JsonBinary) ->
@@ -63,10 +96,6 @@ extract_params(JsonBinary) ->
     catch
         _:_ -> {binary_to_list(JsonBinary), 10}
     end.
-
-%%--------------------------------------------------------------------
-%% Response parsing
-%%--------------------------------------------------------------------
 
 parse_response(JsonData, TimeoutSecs) ->
     try json:decode(JsonData) of
@@ -110,8 +139,15 @@ process_doc(Doc) ->
         _ -> skip
     end.
 
-%% Archive.org may return title/creator as a list — take the first element.
 safe_bin(B) when is_binary(B) -> B;
 safe_bin([B | _]) when is_binary(B) -> B;
 safe_bin([H | _]) -> list_to_binary(io_lib:format("~p", [H]));
 safe_bin(_) -> <<"">>.
+
+%%====================================================================
+%% Internal helpers
+%%====================================================================
+
+-spec url_of(map()) -> binary().
+url_of(#{<<"properties">> := #{<<"url">> := Url}}) -> Url;
+url_of(_) -> <<>>.
