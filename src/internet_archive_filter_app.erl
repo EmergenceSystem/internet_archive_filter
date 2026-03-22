@@ -1,29 +1,31 @@
 %%%-------------------------------------------------------------------
 %%% @doc Internet Archive full-text search agent.
 %%%
-%%% Announces capabilities to em_disco on startup and maintains a
-%%% memory of document URLs already returned so duplicates across
-%%% successive queries are filtered out.
+%%% Deduplication by URL is handled upstream by the Emquest pipeline.
 %%%
-%%% Handler contract: `handle/2' (Body, Memory) -> {RawList, NewMemory}.
-%%% Memory schema: `#{seen => #{binary_url => true}}'.
+%%% === Capability cascade ===
+%%%
+%%%   base_capabilities/0 extends em_filter:base_capabilities().
+%%%
+%%% Handler contract: handle/2 (Body, Memory) -> {RawList, Memory}.
 %%% @end
 %%%-------------------------------------------------------------------
 -module(internet_archive_filter_app).
 -behaviour(application).
 
 -export([start/2, stop/1]).
--export([handle/2]).
+-export([handle/2, base_capabilities/0]).
 
 -define(SEARCH_URL, "https://archive.org/advancedsearch.php?q=").
 
--define(CAPABILITIES, [
-    <<"internet_archive">>,
-    <<"archive">>,
-    <<"history">>,
-    <<"books">>,
-    <<"documents">>
-]).
+%%====================================================================
+%% Capability cascade
+%%====================================================================
+
+-spec base_capabilities() -> [binary()].
+base_capabilities() ->
+    em_filter:base_capabilities() ++ [<<"internet_archive">>, <<"archive">>,
+                                      <<"history">>, <<"books">>, <<"documents">>].
 
 %%====================================================================
 %% Application behaviour
@@ -31,9 +33,9 @@
 
 start(_StartType, _StartArgs) ->
     em_filter:start_agent(archive_filter, ?MODULE, #{
-        capabilities => ?CAPABILITIES,
-        memory       => ets
-    }).
+        capabilities => base_capabilities()
+    }),
+    {ok, self()}.
 
 stop(_State) ->
     em_filter:stop_agent(archive_filter).
@@ -43,14 +45,7 @@ stop(_State) ->
 %%====================================================================
 
 handle(Body, Memory) when is_binary(Body) ->
-    Seen    = maps:get(seen, Memory, #{}),
-    Embryos = generate_embryo_list(Body),
-    Fresh   = [E || E <- Embryos, not maps:is_key(url_of(E), Seen)],
-    NewSeen = lists:foldl(fun(E, Acc) ->
-        Acc#{url_of(E) => true}
-    end, Seen, Fresh),
-    {Fresh, Memory#{seen => NewSeen}};
-
+    {generate_embryo_list(Body), Memory};
 handle(_Body, Memory) ->
     {[], Memory}.
 
@@ -73,7 +68,8 @@ generate_embryo_list(JsonBinary) ->
 extract_params(JsonBinary) ->
     try json:decode(JsonBinary) of
         Map when is_map(Map) ->
-            Value   = binary_to_list(maps:get(<<"value">>,   Map, <<"">>)),
+            Value   = binary_to_list(maps:get(<<"value">>, Map,
+                          maps:get(<<"query">>, Map, <<"">>))),
             Timeout = case maps:get(<<"timeout">>, Map, undefined) of
                 undefined            -> 10;
                 T when is_integer(T) -> T;
@@ -132,7 +128,3 @@ safe_bin(B) when is_binary(B) -> B;
 safe_bin([B | _]) when is_binary(B) -> B;
 safe_bin([H | _]) -> list_to_binary(io_lib:format("~p", [H]));
 safe_bin(_) -> <<"">>.
-
--spec url_of(map()) -> binary().
-url_of(#{<<"properties">> := #{<<"url">> := Url}}) -> Url;
-url_of(_) -> <<>>.
