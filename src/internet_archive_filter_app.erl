@@ -25,7 +25,8 @@
 -spec base_capabilities() -> [binary()].
 base_capabilities() ->
     em_filter:base_capabilities() ++ [<<"internet_archive">>, <<"archive">>,
-                                      <<"history">>, <<"books">>, <<"documents">>].
+                                      <<"history">>, <<"books">>, <<"documents">>,
+                                      <<"image">>, <<"images">>, <<"photo">>, <<"pictures">>, <<"texts">>].
 
 %%====================================================================
 %% Application lifecycle
@@ -88,7 +89,7 @@ handle(_Body, Memory) ->
 
 generate_embryo_list(JsonBinary) ->
     {Value, Timeout} = extract_params(JsonBinary),
-    SearchUrl = lists:concat([?SEARCH_URL, uri_string:quote(Value), "&output=json"]),
+    SearchUrl = lists:concat([?SEARCH_URL, uri_string:quote(Value), "&fl%5B%5D=identifier&fl%5B%5D=title&fl%5B%5D=creator&fl%5B%5D=mediatype&rows=15&output=json"]),
     case httpc:request(get, {SearchUrl, []},
                        [{timeout, Timeout * 1000}],
                        [{body_format, binary}]) of
@@ -141,19 +142,25 @@ process_docs([Doc | Rest], Start, Timeout, Acc) ->
 process_doc(Doc) ->
     case maps:get(<<"identifier">>, Doc, undefined) of
         Id when is_binary(Id) ->
-            Title   = safe_bin(maps:get(<<"title">>,   Doc, <<"">>)),
-            Creator = safe_bin(maps:get(<<"creator">>, Doc, <<"">>)),
+            Title   = safe_bin(maps:get(<<"title">>,     Doc, <<"">>)),
+            Creator = safe_bin(maps:get(<<"creator">>,   Doc, <<"">>)),
+            MType   = safe_bin(maps:get(<<"mediatype">>, Doc, <<"">>)),
+            Url     = <<"https://archive.org/details/", Id/binary>>,
             Resume  = case Creator of
                 <<"">> -> Title;
                 C      -> <<Title/binary, " - ", C/binary>>
             end,
-            Url = <<"https://archive.org/details/", Id/binary>>,
-            {ok, #{
-                <<"properties">> => #{
-                    <<"url">>    => Url,
-                    <<"resume">> => Resume
-                }
-            }};
+            Base = #{<<"url">> => Url, <<"title">> => Title,
+                     <<"resume">> => Resume, <<"source">> => <<"archive.org">>},
+            Props = case MType of
+                <<"image">> ->
+                    Thumb = <<"https://archive.org/services/img/", Id/binary>>,
+                    Base#{<<"media_type">> => <<"image">>,
+                          <<"thumbnail">>  => Thumb,
+                          <<"media_url">>  => Thumb};
+                _ -> Base
+            end,
+            {ok, #{<<"properties">> => Props}};
         _ -> skip
     end.
 
